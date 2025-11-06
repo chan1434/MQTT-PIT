@@ -1,0 +1,20 @@
+{
+  "name": "RFID Access Control System",
+  "short_name": "RFID Control",
+  "description": "Real-time RFID access control monitoring dashboard",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["utilities", "productivity"],
+  "prefer_related_applications": false
+}
