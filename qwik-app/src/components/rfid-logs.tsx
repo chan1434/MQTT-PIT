@@ -8,15 +8,16 @@ export interface LogEntry {
   time_12hr: string;
   rfid_data: string;
   rfid_status: boolean;
+  status_text: string;
+  found: boolean;
 }
 
 interface RFIDLogsProps {
   logs: LogEntry[];
   loading: boolean;
-  showAsNumbers?: boolean;
 }
 
-export const RFIDLogs = component$<RFIDLogsProps>(({ logs, loading, showAsNumbers = false }) => {
+export const RFIDLogs = component$<RFIDLogsProps>(({ logs, loading }) => {
   return (
     <div class="bg-white rounded-lg shadow-md p-6">
       <h2 class="text-2xl font-bold mb-4 text-gray-800">Recent RFID Logs</h2>
@@ -55,49 +56,17 @@ export const RFIDLogs = component$<RFIDLogsProps>(({ logs, loading, showAsNumber
                   <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-700">
                     {log.rfid_data}
                   </td>
-                  <td class="px-4 py-3 whitespace-nowrap">
+                  <td class="px-4 py-3 whitespace-nowrap text-sm">
                     <span
-                      class={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
-                        log.rfid_status
+                      class={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${
+                        log.status_text === "1"
                           ? "bg-green-100 text-green-800"
-                          : "bg-red-100 text-red-800"
+                          : log.status_text === "0"
+                          ? "bg-red-100 text-red-800"
+                          : "bg-yellow-100 text-yellow-800"
                       }`}
                     >
-                      {showAsNumbers ? (
-                        <span class="font-mono font-bold">
-                          {log.rfid_status ? "1" : "0"}
-                        </span>
-                      ) : log.rfid_status ? (
-                        <>
-                          <svg
-                            class="w-4 h-4 mr-1"
-                            fill="currentColor"
-                            viewBox="0 0 20 20"
-                          >
-                            <path
-                              fill-rule="evenodd"
-                              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-                              clip-rule="evenodd"
-                            />
-                          </svg>
-                          Access Granted
-                        </>
-                      ) : (
-                        <>
-                          <svg
-                            class="w-4 h-4 mr-1"
-                            fill="currentColor"
-                            viewBox="0 0 20 20"
-                          >
-                            <path
-                              fill-rule="evenodd"
-                              d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                              clip-rule="evenodd"
-                            />
-                          </svg>
-                          Access Denied
-                        </>
-                      )}
+                      {log.status_text}
                     </span>
                   </td>
                 </tr>

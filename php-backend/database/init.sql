@@ -1,9 +1,6 @@
--- RFID MQTT IoT System Database Initialization
--- Database: it414_db_GROUP1
 
--- Create database
-CREATE DATABASE IF NOT EXISTS it414_db_GROUP1;
-USE it414_db_GROUP1;
+CREATE DATABASE IF NOT EXISTS it414_db_ajjcr;
+USE it414_db_ajjcr;
 
 -- Table for registered RFID cards
 CREATE TABLE IF NOT EXISTS rfid_reg (
@@ -25,12 +22,10 @@ CREATE TABLE IF NOT EXISTS rfid_logs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Insert sample RFID data for testing
-INSERT INTO rfid_reg (rfid_data, rfid_status) VALUES
-    ('1A2B3C4D', 1),
-    ('5E6F7G8H', 1),
-    ('9I0J1K2L', 0),
-    ('3M4N5O6P', 1)
-ON DUPLICATE KEY UPDATE rfid_data=rfid_data;
+INSERT INTO rfid_reg (rfid_data, rfid_status) VALUES 
+('63:70:DA:39', 1), 
+('A2:CD:AB:AB', 0) 
+ON DUPLICATE KEY UPDATE rfid_status = VALUES(rfid_status); 
 
 -- Display tables
 SHOW TABLES;

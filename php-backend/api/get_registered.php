@@ -29,7 +29,7 @@ try {
     // Format response
     foreach ($registered as &$rfid) {
         $rfid['rfid_status'] = (bool)$rfid['rfid_status'];
-        $rfid['status_text'] = $rfid['rfid_status'] ? 'Active' : 'Inactive';
+        $rfid['status_text'] = $rfid['rfid_status'] ? '1' : '0';
     }
     
     echo json_encode([

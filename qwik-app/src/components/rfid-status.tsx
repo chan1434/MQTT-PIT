@@ -1,4 +1,4 @@
-import { component$ } from "@builder.io/qwik";
+import { component$, type PropFunction } from "@builder.io/qwik";
 
 export interface RFIDData {
   id: number;
@@ -12,10 +12,12 @@ export interface RFIDData {
 interface RFIDStatusProps {
   registered: RFIDData[];
   loading: boolean;
-  showAsNumbers?: boolean;
+  onToggle$?: PropFunction<(rfid: RFIDData, nextStatus: boolean) => void>;
+  togglingId?: number | null;
 }
 
-export const RFIDStatus = component$<RFIDStatusProps>(({ registered, loading, showAsNumbers = false }) => {
+export const RFIDStatus = component$<RFIDStatusProps>(
+  ({ registered, loading, onToggle$, togglingId = null }) => {
   return (
     <div class="bg-white rounded-lg shadow-md p-6 mb-6">
       <h2 class="text-2xl font-bold mb-4 text-gray-800">Registered RFID Cards</h2>
@@ -44,17 +46,48 @@ export const RFIDStatus = component$<RFIDStatusProps>(({ registered, loading, sh
                       : "bg-red-100 text-red-800"
                   }`}
                 >
-                  {showAsNumbers ? (rfid.rfid_status ? "1" : "0") : rfid.status_text}
+                  {rfid.status_text}
                 </span>
               </div>
               <div class="text-sm text-gray-500">
                 <p>ID: {rfid.id}</p>
               </div>
+              {onToggle$ && (
+                <div class="mt-4 flex items-center justify-between">
+                  <label
+                    class={`relative inline-flex h-7 w-14 items-center rounded-full transition-colors ${
+                      rfid.rfid_status ? "bg-green-500" : "bg-gray-300"
+                    } ${togglingId === rfid.id ? "opacity-60" : "cursor-pointer"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      class="sr-only"
+                      checked={rfid.rfid_status}
+                      disabled={togglingId === rfid.id}
+                      onInput$={(event) =>
+                        onToggle$(
+                          rfid,
+                          (event.target as HTMLInputElement).checked,
+                        )
+                      }
+                    />
+                    <span
+                      class={`inline-block h-6 w-6 transform rounded-full bg-white shadow transition-transform ${
+                        rfid.rfid_status ? "translate-x-7" : "translate-x-1"
+                      }`}
+                    />
+                  </label>
+                  <span class="ml-3 font-mono text-sm text-gray-700">
+                    {rfid.status_text}
+                  </span>
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
     </div>
   );
-});
+}
+);
 

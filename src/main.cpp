@@ -35,15 +35,13 @@ const char* wifi_networks[][2] = {
 const int num_networks = sizeof(wifi_networks) / sizeof(wifi_networks[0]);
 
 // MQTT Configuration
-const char* mqtt_server = "127.0.0.1";  // localhost
 const int mqtt_port = 1883;
 const char* mqtt_topic = "RFID_LOGIN";
 const char* mqtt_client_id = "ESP32_RFID_Scanner";
 
 // PHP Backend Configuration
-// Note: Replace with your computer's local IP address if ESP32 can't reach localhost
-// Example: "http://192.168.1.100/php-backend/api/check_rfid.php"
-const char* api_endpoint = "http://192.168.1.100/php-backend/api/check_rfid.php";
+const uint16_t api_port = 81;
+const char* api_path = "/php-backend/api/check_rfid.php";
 
 // Initialize objects
 MFRC522 mfrc522(SS_PIN, RST_PIN);
@@ -53,6 +51,8 @@ PubSubClient mqtt_client(espClient);
 // Variables
 unsigned long lastReconnectAttempt = 0;
 bool wifi_connected = false;
+IPAddress gateway_ip;
+String gateway_host = "";
 
 // Function declarations
 void connectToWiFi();
@@ -60,6 +60,8 @@ void connectToMQTT();
 String readRFID();
 void checkRFIDWithServer(String rfid_uid);
 void publishMQTT(String message);
+String urlEncode(const String& input);
+void updateNetworkTargets();
 
 void setup() {
   Serial.begin(115200);
@@ -76,9 +78,6 @@ void setup() {
   
   // Connect to WiFi
   connectToWiFi();
-  
-  // Setup MQTT
-  mqtt_client.setServer(mqtt_server, mqtt_port);
   
   Serial.println("=== Setup Complete ===");
   Serial.println("Ready to scan RFID cards...\n");
@@ -158,6 +157,7 @@ void connectToWiFi() {
       Serial.print(WiFi.RSSI());
       Serial.println(" dBm");
       wifi_connected = true;
+      updateNetworkTargets();
       return;
     } else {
       Serial.println(" Failed!");
@@ -173,6 +173,11 @@ void connectToMQTT() {
     return;
   }
   
+  if (gateway_host.length() == 0) {
+    Serial.println("Skipping MQTT connect: gateway IP not available");
+    return;
+  }
+
   Serial.print("Connecting to MQTT broker... ");
   
   if (mqtt_client.connect(mqtt_client_id)) {
@@ -187,12 +192,76 @@ String readRFID() {
   String content = "";
   
   for (byte i = 0; i < mfrc522.uid.size; i++) {
-    content += String(mfrc522.uid.uidByte[i] < 0x10 ? "0" : "");
-    content += String(mfrc522.uid.uidByte[i], HEX);
+    if (i > 0) {
+      content += ":";
+    }
+
+    byte value = mfrc522.uid.uidByte[i];
+
+    if (value < 0x10) {
+      content += "0";
+    }
+
+    content += String(value, HEX);
   }
   
   content.toUpperCase();
   return content;
+}
+
+String urlEncode(const String& input) {
+  const char* hex = "0123456789ABCDEF";
+  String encoded;
+  encoded.reserve(input.length() * 3);
+
+  for (size_t i = 0; i < input.length(); i++) {
+    char c = input.charAt(i);
+
+    bool is_unreserved =
+      (c >= 'A' && c <= 'Z') ||
+      (c >= 'a' && c <= 'z') ||
+      (c >= '0' && c <= '9') ||
+      c == '-' || c == '_' || c == '.' || c == '~';
+
+    if (is_unreserved) {
+      encoded += c;
+    } else {
+      byte b = static_cast<byte>(c);
+      encoded += '%';
+      encoded += hex[(b >> 4) & 0x0F];
+      encoded += hex[b & 0x0F];
+    }
+  }
+
+  return encoded;
+}
+
+void updateNetworkTargets() {
+  IPAddress new_gateway = WiFi.gatewayIP();
+
+  if (new_gateway == IPAddress(0, 0, 0, 0)) {
+    Serial.println("Gateway IP unavailable; network targets not updated");
+    gateway_host = "";
+    return;
+  }
+
+  gateway_ip = new_gateway;
+  gateway_host = gateway_ip.toString();
+
+  Serial.print("Gateway IP: ");
+  Serial.println(gateway_host);
+
+  mqtt_client.setServer(gateway_ip, mqtt_port);
+  Serial.print("Configured MQTT target: ");
+  Serial.print(gateway_host);
+  Serial.print(":");
+  Serial.println(mqtt_port);
+
+  Serial.print("Configured API endpoint base: http://");
+  Serial.print(gateway_host);
+  Serial.print(":");
+  Serial.print(api_port);
+  Serial.println(api_path);
 }
 
 void checkRFIDWithServer(String rfid_uid) {
@@ -200,9 +269,15 @@ void checkRFIDWithServer(String rfid_uid) {
     Serial.println("Cannot check RFID: WiFi not connected");
     return;
   }
+
+  if (gateway_host.length() == 0) {
+    Serial.println("Cannot check RFID: gateway IP not available");
+    return;
+  }
   
   HTTPClient http;
-  String url = String(api_endpoint) + "?rfid_data=" + rfid_uid;
+  String encoded_rfid = urlEncode(rfid_uid);
+  String url = "http://" + gateway_host + ":" + String(api_port) + String(api_path) + "?rfid_data=" + encoded_rfid;
   
   Serial.print("Checking with server: ");
   Serial.println(url);
@@ -222,7 +297,7 @@ void checkRFIDWithServer(String rfid_uid) {
       Serial.println(payload);
       
       // Parse JSON response
-      StaticJsonDocument<512> doc;
+      JsonDocument doc;
       DeserializationError error = deserializeJson(doc, payload);
       
       if (!error) {

@@ -30,7 +30,6 @@ const char* wifi_networks[][2] = {
 const int num_networks = sizeof(wifi_networks) / sizeof(wifi_networks[0]);
 
 // MQTT Configuration
-const char* mqtt_server = "127.0.0.1";  // localhost
 const int mqtt_port = 1883;
 const char* mqtt_topic = "RFID_LOGIN";
 const char* mqtt_client_id = "ESP32_Relay_Controller";
@@ -42,11 +41,14 @@ PubSubClient mqtt_client(espClient);
 // Variables
 unsigned long lastReconnectAttempt = 0;
 bool wifi_connected = false;
+IPAddress gateway_ip;
+String gateway_host = "";
 
 // Function declarations
 void connectToWiFi();
 void connectToMQTT();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
+void updateNetworkTargets();
 
 void setup() {
   Serial.begin(115200);
@@ -61,7 +63,6 @@ void setup() {
   connectToWiFi();
   
   // Setup MQTT
-  mqtt_client.setServer(mqtt_server, mqtt_port);
   mqtt_client.setCallback(mqttCallback);
   
   Serial.println("=== Setup Complete ===");
@@ -122,6 +123,7 @@ void connectToWiFi() {
       Serial.print(WiFi.RSSI());
       Serial.println(" dBm");
       wifi_connected = true;
+      updateNetworkTargets();
       return;
     } else {
       Serial.println(" Failed!");
@@ -137,6 +139,11 @@ void connectToMQTT() {
     return;
   }
   
+  if (gateway_host.length() == 0) {
+    Serial.println("Skipping MQTT connect: gateway IP not available");
+    return;
+  }
+
   Serial.print("Connecting to MQTT broker... ");
   
   if (mqtt_client.connect(mqtt_client_id)) {
@@ -154,6 +161,28 @@ void connectToMQTT() {
     Serial.print("Failed, rc=");
     Serial.println(mqtt_client.state());
   }
+}
+
+void updateNetworkTargets() {
+  IPAddress new_gateway = WiFi.gatewayIP();
+
+  if (new_gateway == IPAddress(0, 0, 0, 0)) {
+    Serial.println("Gateway IP unavailable; MQTT target not updated");
+    gateway_host = "";
+    return;
+  }
+
+  gateway_ip = new_gateway;
+  gateway_host = gateway_ip.toString();
+
+  Serial.print("Gateway IP: ");
+  Serial.println(gateway_host);
+
+  mqtt_client.setServer(gateway_ip, mqtt_port);
+  Serial.print("Configured MQTT target: ");
+  Serial.print(gateway_host);
+  Serial.print(":");
+  Serial.println(mqtt_port);
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
