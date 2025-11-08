@@ -8,15 +8,20 @@ header('Access-Control-Allow-Methods: GET, POST');
 header('Access-Control-Allow-Headers: Content-Type');
 
 require_once '../config/database.php';
+require_once '../config/timezone.php';
+require_once '../config/realtime.php';
 
 // Function to format response
-function sendResponse($status, $found, $message, $rfid_data = '') {
+function sendResponse($status, $found, $message, $rfid_data = '', $status_text = null) {
+    $now = manila_now();
+
     echo json_encode([
         'status' => $status,
         'found' => $found,
         'message' => $message,
         'rfid_data' => $rfid_data,
-        'timestamp' => date('Y-m-d H:i:s')
+        'status_text' => $status_text,
+        'timestamp' => $now->format('Y-m-d H:i:s')
     ]);
     exit();
 }
@@ -48,26 +53,49 @@ try {
     
     $status = 0;
     $found = false;
-    $message = 'RFID NOT FOUND';
+    $status_text = 'RFID NOT FOUND';
     
     if ($result) {
         // RFID found in database
         $found = true;
         $status = (int)$result['rfid_status'];
-        $message = $status ? 'Access Granted' : 'Access Denied';
+        $status_text = (string)$status;
     }
     
     // Log the activity to rfid_logs
-    $current_time = date('Y-m-d H:i:s');
+    $now = manila_now();
+    $current_time = $now->format('Y-m-d H:i:s');
     $log_stmt = $conn->prepare("INSERT INTO rfid_logs (time_log, rfid_data, rfid_status) VALUES (:time_log, :rfid_data, :rfid_status)");
     $log_stmt->execute([
         'time_log' => $current_time,
         'rfid_data' => $rfid_data,
         'rfid_status' => $status
     ]);
+
+    $log_id = (int)$conn->lastInsertId();
+    $datetime = new DateTimeImmutable($current_time, manila_timezone());
+
+    $log_payload = [
+        'id' => $log_id,
+        'time_log' => $current_time,
+        'time_log_formatted' => $datetime->format('Y-m-d h:i:s A'),
+        'date' => $datetime->format('Y-m-d'),
+        'time_12hr' => $datetime->format('h:i:s A'),
+        'rfid_data' => $rfid_data,
+        'rfid_status' => (bool)$status,
+        'status_text' => $status_text,
+        'status' => $status,
+        'found' => $found,
+        'message' => $status_text,
+    ];
+
+    notifyRealtimeBridge([
+        'type' => 'rfid-log',
+        'data' => $log_payload,
+    ]);
     
     // Send response
-    sendResponse($status, $found, $message, $rfid_data);
+    sendResponse($status, $found, $status_text, $rfid_data, $status_text);
     
 } catch (PDOException $e) {
     error_log("Database Error: " . $e->getMessage());
