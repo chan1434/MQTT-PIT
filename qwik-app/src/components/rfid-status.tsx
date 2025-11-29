@@ -9,7 +9,7 @@ export interface RFIDData {
   updated_at?: string;
 }
 
-interface RFIDStatusProps {
+export interface RFIDStatusProps {
   registered: RFIDData[];
   loading: boolean;
   onToggle$?: PropFunction<(rfid: RFIDData, nextStatus: boolean) => void>;
@@ -23,8 +23,17 @@ export const RFIDStatus = component$<RFIDStatusProps>(
       <h2 class="text-2xl font-bold mb-4 text-gray-800">Registered RFID Cards</h2>
       
       {loading ? (
-        <div class="flex items-center justify-center py-8">
-          <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[0, 1, 2].map((placeholder) => (
+            <div
+              key={`rfid-skeleton-${placeholder}`}
+              class="border rounded-lg p-4 animate-pulse bg-gray-50"
+            >
+              <div class="h-4 bg-gray-200 rounded w-1/3 mb-4"></div>
+              <div class="h-3 bg-gray-200 rounded w-2/3 mb-2"></div>
+              <div class="h-3 bg-gray-100 rounded w-1/2"></div>
+            </div>
+          ))}
         </div>
       ) : registered.length === 0 ? (
         <p class="text-gray-500 text-center py-4">No registered RFID cards found.</p>
@@ -54,31 +63,33 @@ export const RFIDStatus = component$<RFIDStatusProps>(
               </div>
               {onToggle$ && (
                 <div class="mt-4 flex items-center justify-between">
-                  <label
-                    class={`relative inline-flex h-7 w-14 items-center rounded-full transition-colors ${
-                      rfid.rfid_status ? "bg-green-500" : "bg-gray-300"
-                    } ${togglingId === rfid.id ? "opacity-60" : "cursor-pointer"}`}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={rfid.rfid_status}
+                    aria-label={rfid.rfid_status ? "Deactivate RFID card" : "Activate RFID card"}
+                    aria-disabled="true"
+                    disabled={true}
+                    class={`relative inline-flex h-9 w-16 items-center rounded-full transition-all duration-300 ease-in-out opacity-60 cursor-not-allowed ${
+                      rfid.rfid_status
+                        ? "bg-green-500"
+                        : "bg-gray-300"
+                    }`}
                   >
-                    <input
-                      type="checkbox"
-                      class="sr-only"
-                      checked={rfid.rfid_status}
-                      disabled={togglingId === rfid.id}
-                      onInput$={(event) =>
-                        onToggle$(
-                          rfid,
-                          (event.target as HTMLInputElement).checked,
-                        )
-                      }
-                    />
                     <span
-                      class={`inline-block h-6 w-6 transform rounded-full bg-white shadow transition-transform ${
-                        rfid.rfid_status ? "translate-x-7" : "translate-x-1"
+                      class={`inline-block h-7 w-7 transform rounded-full bg-white shadow-lg transition-all duration-300 ease-in-out opacity-50 ${
+                        rfid.rfid_status
+                          ? "translate-x-9"
+                          : "translate-x-1"
                       }`}
                     />
-                  </label>
-                  <span class="ml-3 font-mono text-sm text-gray-700">
-                    {rfid.status_text}
+                  </button>
+                  <span class="ml-3 text-sm font-medium text-gray-700">
+                    {rfid.rfid_status ? (
+                      <span class="text-green-600 font-semibold">Active</span>
+                    ) : (
+                      <span class="text-gray-500">Inactive</span>
+                    )}
                   </span>
                 </div>
               )}

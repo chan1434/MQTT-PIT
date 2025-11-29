@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS rfid_reg (
     rfid_data VARCHAR(50) NOT NULL UNIQUE,
     rfid_status BOOLEAN NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_rfid_data_status (rfid_data, rfid_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Table for RFID scan logs
@@ -18,7 +19,9 @@ CREATE TABLE IF NOT EXISTS rfid_logs (
     rfid_data VARCHAR(50) NOT NULL,
     rfid_status BOOLEAN NOT NULL,
     INDEX idx_time_log (time_log DESC),
-    INDEX idx_rfid_data (rfid_data)
+    INDEX idx_rfid_data (rfid_data),
+    INDEX idx_composite (time_log DESC, rfid_data),
+    INDEX idx_covering (time_log DESC, rfid_data, rfid_status, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Insert sample RFID data for testing

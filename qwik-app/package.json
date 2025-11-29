@@ -12,6 +12,7 @@
     "build.client": "vite build",
     "build.preview": "vite build --ssr src/entry.preview.tsx",
     "build.types": "tsc --incremental --noEmit",
+    "build.analyze": "vite build --mode analyze",
     "deploy": "echo 'Run \"npm run qwik add\" to install a server adapter'",
     "predev": "node scripts/generate-certs.js",
     "dev": "concurrently -k -n VITE,BRIDGE -c \"auto\" \"npm:dev.vite\" \"npm:live-updates\"",
@@ -26,6 +27,8 @@
     "prestart": "node scripts/generate-certs.js",
     "start": "vite --open --mode ssr",
     "live-updates": "node scripts/live-updates-server.js",
+    "analyze": "npm run build.analyze && open stats.html",
+    "size:check": "npm run build && node scripts/check-bundle-size.js",
     "qwik": "qwik"
   },
   "devDependencies": {
@@ -38,14 +41,13 @@
     "eslint-plugin-qwik": "^1.17.2",
     "globals": "16.4.0",
     "prettier": "3.6.2",
+    "rollup-plugin-visualizer": "^5.12.0",
     "typescript": "5.4.5",
     "typescript-eslint": "8.38.0",
     "typescript-plugin-css-modules": "latest",
     "undici": "*",
     "vite": "7.1.11",
-    "vite-tsconfig-paths": "^4.2.1"
-  },
-  "dependencies": {
+    "vite-tsconfig-paths": "^4.2.1",
     "ws": "^8.18.3"
   }
 }

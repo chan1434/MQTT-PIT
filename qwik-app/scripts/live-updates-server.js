@@ -57,12 +57,49 @@ function loadTlsAssets() {
 }
 
 const clients = new Set();
+const clientPool = new Map();  // Connection pooling by client ID
+const priorityQueue = { high: [], low: [] };  // Message priority queue
+let batchTimer = null;
+const BATCH_INTERVAL_MS = Number(process.env.LIVE_UPDATES_BATCH_MS || 100);
+const HEARTBEAT_INTERVAL_MS = Number(process.env.LIVE_UPDATES_HEARTBEAT || 30000);
 
-function broadcast(jsonPayload) {
-  const data = JSON.stringify(jsonPayload);
+function queueBroadcast(jsonPayload, priority = 'low') {
+  // Determine priority based on message type
+  const msgPriority = jsonPayload.type === 'rfid-log' ? 'high' : priority;
+  priorityQueue[msgPriority].push(jsonPayload);
+  
+  if (!batchTimer) {
+    batchTimer = setTimeout(flushBroadcastQueue, BATCH_INTERVAL_MS);
+  }
+}
+
+function flushBroadcastQueue() {
+  batchTimer = null;
+  
+  // Process high priority first, limit low priority
+  const batch = [
+    ...priorityQueue.high.splice(0),
+    ...priorityQueue.low.splice(0, 10),  // Limit low-priority messages
+  ];
+  
+  if (batch.length === 0) {
+    return;
+  }
+
+  const payload =
+    batch.length === 1
+      ? batch[0]
+      : {
+          type: "batch",
+          data: batch,
+          count: batch.length,
+        };
+
+  const serialized = JSON.stringify(payload);
+  
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) {
-      ws.send(data);
+      ws.send(serialized);
     }
   }
 }
@@ -114,7 +151,7 @@ function createServer() {
           receivedAt: formatManilaISO(),
         };
 
-        broadcast(enrichedPayload);
+        queueBroadcast(enrichedPayload);
 
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, delivered: clients.size }));
@@ -128,19 +165,75 @@ function createServer() {
 }
 
 const server = createServer();
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+  server,
+  perMessageDeflate: {
+    zlibDeflateOptions: {
+      chunkSize: 1024,
+      memLevel: 7,
+      level: 6,
+    },
+    zlibInflateOptions: {
+      chunkSize: 10 * 1024,
+    },
+    clientNoContextTakeover: true,
+    serverNoContextTakeover: true,
+    serverMaxWindowBits: 10,
+    concurrencyLimit: 10,
+    threshold: 1024,
+  },
+});
+
+const heartbeatInterval =
+  HEARTBEAT_INTERVAL_MS > 0
+    ? setInterval(() => {
+        for (const ws of clients) {
+          if (ws.isAlive === false) {
+            clients.delete(ws);
+            ws.terminate();
+            continue;
+          }
+          ws.isAlive = false;
+          ws.ping();
+        }
+      }, HEARTBEAT_INTERVAL_MS)
+    : null;
 
 wss.on("connection", (ws, req) => {
+  // Connection pooling - get client ID from headers or generate one
+  const clientId = req.headers['x-client-id'] || `client-${Date.now()}-${Math.random()}`;
+  
+  // If client already has a connection, close the old one
+  if (clientPool.has(clientId)) {
+    const oldWs = clientPool.get(clientId);
+    if (oldWs.readyState === oldWs.OPEN) {
+      oldWs.close(1000, 'Replaced by new connection');
+      clients.delete(oldWs);
+    }
+  }
+  
   clients.add(ws);
-  console.log(`🔌 Client connected (${clients.size} total)`);
+  clientPool.set(clientId, ws);
+  ws.isAlive = true;
+  ws.clientId = clientId;
+  console.log(`🔌 Client connected: ${clientId} (${clients.size} total)`);
+
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
+
+  ws.on("message", () => {
+    ws.isAlive = true;
+  });
 
   ws.on("close", () => {
     clients.delete(ws);
-    console.log(`🔌 Client disconnected (${clients.size} remaining)`);
+    clientPool.delete(clientId);
+    console.log(`🔌 Client disconnected: ${clientId} (${clients.size} remaining)`);
   });
 
   ws.on("error", (error) => {
-    console.error("WebSocket error", error);
+    console.error(`WebSocket error for ${clientId}:`, error);
   });
 
   ws.send(
@@ -149,6 +242,7 @@ wss.on("connection", (ws, req) => {
       data: {
         message: "Connected to RFID live updates",
         connectedAt: formatManilaISO(),
+        clientId: clientId,
       },
     })
   );
@@ -169,4 +263,10 @@ server.listen(DEFAULT_PORT, HOST, () => {
 server.on("error", (error) => {
   console.error("HTTP server error", error);
 });
+
+if (heartbeatInterval) {
+  wss.on("close", () => {
+    clearInterval(heartbeatInterval);
+  });
+}
 

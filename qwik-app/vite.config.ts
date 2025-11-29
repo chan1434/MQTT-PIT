@@ -11,6 +11,7 @@ import { defineConfig, type UserConfig } from "vite";
 import { qwikVite } from "@builder.io/qwik/optimizer";
 import { qwikCity } from "@builder.io/qwik-city/vite";
 import tsconfigPaths from "vite-tsconfig-paths";
+import { visualizer } from "rollup-plugin-visualizer";
 import pkg from "./package.json";
 import fs from "fs";
 import path from "path";
@@ -32,8 +33,8 @@ export default defineConfig(({ command, mode }): UserConfig => {
   const certPath = path.resolve(__dirname, './certs/localhost-cert.pem');
   const certsExist = fs.existsSync(keyPath) && fs.existsSync(certPath);
   
-  // HTTPS is REQUIRED for this application
-  if (command === 'serve' && !certsExist) {
+  // HTTPS is REQUIRED for this application (skip check in analyze mode)
+  if (command === 'serve' && !certsExist && mode !== 'analyze') {
     console.error('');
     console.error('❌ SSL Certificates Not Found!');
     console.error('   HTTPS is REQUIRED for this application.');
@@ -46,13 +47,53 @@ export default defineConfig(({ command, mode }): UserConfig => {
     throw new Error('SSL certificates required. Run: npm run generate-certs');
   }
   
+  const plugins = [qwikCity(), qwikVite(), tsconfigPaths({ root: "." })];
+  
+  // Add bundle analyzer in analyze mode
+  if (mode === 'analyze') {
+    plugins.push(
+      visualizer({
+        filename: 'stats.html',
+        open: true,
+        gzipSize: true,
+        brotliSize: true,
+        template: 'treemap', // sunburst, treemap, network
+      }) as any
+    );
+  }
+  
   return {
-    plugins: [qwikCity(), qwikVite(), tsconfigPaths({ root: "." })],
+    plugins,
     // This tells Vite which dependencies to pre-build in dev mode.
     optimizeDeps: {
       // Put problematic deps that break bundling here, mostly those with binaries.
       // For example ['better-sqlite3'] if you use that in server functions.
       exclude: [],
+    },
+    
+    // Build optimizations
+    build: {
+      target: 'es2020',
+      minify: 'esbuild',
+      cssMinify: true,
+      reportCompressedSize: true,
+      chunkSizeWarningLimit: 500,
+      rollupOptions: {
+        output: {
+          // Refined bundle splitting for better parallel loading
+          manualChunks: {
+            'qwik-core': ['@builder.io/qwik'],
+            'qwik-city': ['@builder.io/qwik-city'],
+          },
+          // Critical CSS extraction
+          assetFileNames: (assetInfo) => {
+            if (assetInfo.name && assetInfo.name.endsWith('.css')) {
+              return 'assets/[name]-[hash][extname]';
+            }
+            return 'assets/[name]-[hash][extname]';
+          },
+        },
+      },
     },
 
     /**
@@ -78,10 +119,10 @@ export default defineConfig(({ command, mode }): UserConfig => {
         "Cache-Control": "public, max-age=0",
       },
       // HTTPS is always enabled (required for PWA and security)
-      https: {
+      https: certsExist ? {
         key: fs.readFileSync(keyPath),
         cert: fs.readFileSync(certPath),
-      },
+      } : undefined,
       port: 5174, // Standard HTTPS development port
       host: true, // Allow external connections
       strictPort: false, // Allow fallback if 5174 is busy
@@ -91,10 +132,10 @@ export default defineConfig(({ command, mode }): UserConfig => {
         // Do cache the server response in preview (non-adapter production build)
         "Cache-Control": "public, max-age=600",
       },
-      https: {
+      https: certsExist ? {
         key: fs.readFileSync(keyPath),
         cert: fs.readFileSync(certPath),
-      },
+      } : undefined,
       port: 5174,
       strictPort: false,
     },

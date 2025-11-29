@@ -21,13 +21,16 @@
 #include <MFRC522.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <cstring>
+#include <esp_system.h>
+#include <esp_wifi.h>
 
 // RFID Pin Configuration
-#define RST_PIN 2    // Reset pin
-#define SS_PIN 5     // SDA/SS pin
+#define RST_PIN 2 // Reset pin
+#define SS_PIN 5  // SDA/SS pin
 
 // WiFi Networks Configuration
-const char* wifi_networks[][2] = {
+const char *wifi_networks[][2] = {
   {"Cloud Control Network", "ccv7network"},
   // Add more networks here if needed
   // {"SSID2", "Password2"},
@@ -35,40 +38,68 @@ const char* wifi_networks[][2] = {
 const int num_networks = sizeof(wifi_networks) / sizeof(wifi_networks[0]);
 
 // MQTT Configuration
+// Set this to your MQTT broker IP address (where Mosquitto is running)
+// Use your PC's IP: 192.168.43.17
+const char *mqtt_broker_ip = "192.168.43.17"; // Change this to your MQTT broker IP
 const int mqtt_port = 1883;
-const char* mqtt_topic = "RFID_LOGIN";
-const char* mqtt_client_id = "ESP32_RFID_Scanner";
+const char *mqtt_topic = "RFID_LOGIN";
+const char *mqtt_client_id = "ESP32_RFID_Scanner";
 
 // PHP Backend Configuration
+// Set this to your PC's IP address (where Apache/PHP backend is running)
+const char *api_server_ip = "192.168.43.17"; // Change this to your PC's IP
 const uint16_t api_port = 81;
-const char* api_path = "/php-backend/api/check_rfid.php";
+const char *api_path = "/php-backend/api/check_rfid.php";
+
+// Runtime tuning constants
+constexpr size_t RFID_UID_BUFFER_LEN = 32;
+constexpr size_t ENCODED_UID_BUFFER_LEN = RFID_UID_BUFFER_LEN * 3;
+constexpr size_t URL_BUFFER_LEN = 256;
+constexpr unsigned long SCAN_COOLDOWN_MS = 1500;
+constexpr unsigned long LOOP_IDLE_DELAY_MS = 5;
+constexpr unsigned long TELEMETRY_INTERVAL_MS = 60000;
+constexpr unsigned long MQTT_BACKOFF_MIN_MS = 1000;
+constexpr unsigned long MQTT_BACKOFF_MAX_MS = 10000;
 
 // Initialize objects
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 WiFiClient espClient;
+WiFiClient httpClient;
 PubSubClient mqtt_client(espClient);
 
 // Variables
 unsigned long lastReconnectAttempt = 0;
+unsigned long mqttBackoffDelay = MQTT_BACKOFF_MIN_MS;
+unsigned long nextScanAllowed = 0;
+unsigned long lastTelemetryReport = 0;
 bool wifi_connected = false;
 IPAddress gateway_ip;
-String gateway_host = "";
+IPAddress mqtt_broker;
+IPAddress api_server;
+char gateway_host[16] = {0};
+bool gateway_ready = false;
+bool mqtt_broker_ready = false;
+bool api_server_ready = false;
 
 // Function declarations
 void connectToWiFi();
 void connectToMQTT();
-String readRFID();
-void checkRFIDWithServer(String rfid_uid);
-void publishMQTT(String message);
-String urlEncode(const String& input);
+bool readRFID(char *buffer, size_t bufferLen);
+void checkRFIDWithServer(const char *rfid_uid);
+void publishMQTT(const char *message);
+bool urlEncode(const char *input, char *output, size_t outputLen);
 void updateNetworkTargets();
+void reportRuntimeStats(unsigned long now);
 
-void setup() {
+void setup()
+{
   Serial.begin(115200);
   Serial.println("\n\n=== ESP32 RFID Scanner Starting ===");
   
-  // Initialize SPI bus
+  // Initialize SPI bus with optimized settings
   SPI.begin();
+  SPI.setFrequency(10000000); // 10MHz for MFRC522 (optimal)
+  SPI.setDataMode(SPI_MODE0);
   
   // Initialize MFRC522
   mfrc522.PCD_Init();
@@ -79,75 +110,104 @@ void setup() {
   // Connect to WiFi
   connectToWiFi();
   
+  // Configure WiFi power management for balanced performance
+  WiFi.setSleep(WIFI_PS_MIN_MODEM); // Balanced: saves power but maintains responsiveness
+  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  Serial.println("WiFi power management: Balanced mode");
+  
   Serial.println("=== Setup Complete ===");
   Serial.println("Ready to scan RFID cards...\n");
 }
 
-void loop() {
+void loop()
+{
+  const unsigned long now = millis();
+
   // Maintain WiFi connection
-  if (WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    if (wifi_connected)
+    {
+      Serial.println("WiFi disconnected! Reconnecting...");
+    }
     wifi_connected = false;
-    Serial.println("WiFi disconnected! Reconnecting...");
     connectToWiFi();
-  } else {
+  }
+  else
+  {
     wifi_connected = true;
   }
-  
-  // Maintain MQTT connection
-  if (!mqtt_client.connected()) {
-    unsigned long now = millis();
-    if (now - lastReconnectAttempt > 5000) {
+
+  // Maintain MQTT connection with exponential backoff
+  if (mqtt_client.connected())
+  {
+    mqtt_client.loop();
+    mqttBackoffDelay = MQTT_BACKOFF_MIN_MS;
+  }
+  else if (wifi_connected)
+  {
+    if (now - lastReconnectAttempt >= mqttBackoffDelay)
+    {
       lastReconnectAttempt = now;
       connectToMQTT();
+      unsigned long nextDelay = mqttBackoffDelay * 2;
+      mqttBackoffDelay = nextDelay > MQTT_BACKOFF_MAX_MS ? MQTT_BACKOFF_MAX_MS : nextDelay;
     }
-  } else {
-    mqtt_client.loop();
   }
-  
-  // Check for RFID card
-  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
-    String rfid_uid = readRFID();
+
+  // Check for RFID card without blocking delays
+  if (now >= nextScanAllowed && mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial())
+  {
+    char rfid_uid[RFID_UID_BUFFER_LEN] = {0};
     
-    if (rfid_uid.length() > 0) {
+    if (readRFID(rfid_uid, sizeof(rfid_uid)))
+    {
       Serial.println("\n---------------------------------");
       Serial.print("RFID Detected: ");
       Serial.println(rfid_uid);
-      
-      // Check RFID with server
       checkRFIDWithServer(rfid_uid);
     }
+    else
+    {
+      Serial.println("RFID buffer insufficient; skipping read");
+    }
     
-    // Halt PICC and stop encryption
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
-    
-    delay(2000); // Prevent multiple reads
+    nextScanAllowed = now + SCAN_COOLDOWN_MS;
   }
-  
-  delay(100);
+
+  reportRuntimeStats(now);
+  delay(LOOP_IDLE_DELAY_MS);
 }
 
-void connectToWiFi() {
+void connectToWiFi()
+{
   Serial.println("\n=== Connecting to WiFi ===");
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
+  gateway_ready = false;
+  gateway_host[0] = '\0';
   
   // Try each configured network
-  for (int i = 0; i < num_networks; i++) {
+  for (int i = 0; i < num_networks; i++)
+  {
     Serial.print("Attempting: ");
     Serial.println(wifi_networks[i][0]);
     
     WiFi.begin(wifi_networks[i][0], wifi_networks[i][1]);
     
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    while (WiFi.status() != WL_CONNECTED && attempts < 20)
+    {
       delay(500);
       Serial.print(".");
       attempts++;
     }
     
-    if (WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED)
+    {
       Serial.println("\nWiFi Connected!");
       Serial.print("SSID: ");
       Serial.println(WiFi.SSID());
@@ -159,7 +219,9 @@ void connectToWiFi() {
       wifi_connected = true;
       updateNetworkTargets();
       return;
-    } else {
+    }
+    else
+    {
       Serial.println(" Failed!");
     }
   }
@@ -168,160 +230,335 @@ void connectToWiFi() {
   wifi_connected = false;
 }
 
-void connectToMQTT() {
-  if (!wifi_connected) {
+void connectToMQTT()
+{
+  if (!wifi_connected)
+  {
     return;
   }
-  
-  if (gateway_host.length() == 0) {
-    Serial.println("Skipping MQTT connect: gateway IP not available");
+
+  if (!mqtt_broker_ready)
+  {
+    Serial.println("Skipping MQTT connect: MQTT broker IP not configured");
     return;
   }
 
   Serial.print("Connecting to MQTT broker... ");
-  
-  if (mqtt_client.connect(mqtt_client_id)) {
+  Serial.print(mqtt_broker_ip);
+  Serial.print(":");
+  Serial.print(mqtt_port);
+  Serial.print(" ... ");
+
+  if (mqtt_client.connect(mqtt_client_id))
+  {
     Serial.println("Connected!");
-  } else {
+    mqttBackoffDelay = MQTT_BACKOFF_MIN_MS;
+  }
+  else
+  {
     Serial.print("Failed, rc=");
     Serial.println(mqtt_client.state());
   }
 }
 
-String readRFID() {
-  String content = "";
-  
-  for (byte i = 0; i < mfrc522.uid.size; i++) {
-    if (i > 0) {
-      content += ":";
+bool readRFID(char *buffer, size_t bufferLen)
+{
+  if (bufferLen == 0)
+  {
+    return false;
+  }
+
+  size_t offset = 0;
+
+  for (byte i = 0; i < mfrc522.uid.size; i++)
+  {
+    if (i > 0)
+    {
+      if (offset + 1 >= bufferLen)
+      {
+        buffer[offset] = '\0';
+        return false;
+      }
+      buffer[offset++] = ':';
+    }
+
+    if (offset + 2 >= bufferLen)
+    {
+      buffer[offset] = '\0';
+      return false;
     }
 
     byte value = mfrc522.uid.uidByte[i];
-
-    if (value < 0x10) {
-      content += "0";
-    }
-
-    content += String(value, HEX);
+    snprintf(&buffer[offset], bufferLen - offset, "%02X", value);
+    offset += 2;
   }
-  
-  content.toUpperCase();
-  return content;
+
+  buffer[offset] = '\0';
+  return true;
 }
 
-String urlEncode(const String& input) {
-  const char* hex = "0123456789ABCDEF";
-  String encoded;
-  encoded.reserve(input.length() * 3);
+bool urlEncode(const char *input, char *output, size_t outputLen)
+{
+  if (!input || !output || outputLen == 0)
+  {
+    return false;
+  }
 
-  for (size_t i = 0; i < input.length(); i++) {
-    char c = input.charAt(i);
+  const char *hex = "0123456789ABCDEF";
+  size_t outIndex = 0;
 
-    bool is_unreserved =
+  for (size_t i = 0; input[i] != '\0'; i++)
+  {
+    const char c = input[i];
+    const bool is_unreserved =
       (c >= 'A' && c <= 'Z') ||
       (c >= 'a' && c <= 'z') ||
       (c >= '0' && c <= '9') ||
       c == '-' || c == '_' || c == '.' || c == '~';
 
-    if (is_unreserved) {
-      encoded += c;
-    } else {
-      byte b = static_cast<byte>(c);
-      encoded += '%';
-      encoded += hex[(b >> 4) & 0x0F];
-      encoded += hex[b & 0x0F];
+    if (is_unreserved)
+    {
+      if (outIndex + 1 >= outputLen)
+      {
+        return false;
+      }
+      output[outIndex++] = c;
+    }
+    else
+    {
+      if (outIndex + 3 >= outputLen)
+      {
+        return false;
+      }
+      uint8_t byteVal = static_cast<uint8_t>(c);
+      output[outIndex++] = '%';
+      output[outIndex++] = hex[(byteVal >> 4) & 0x0F];
+      output[outIndex++] = hex[byteVal & 0x0F];
     }
   }
 
-  return encoded;
+  if (outIndex >= outputLen)
+  {
+    return false;
+  }
+
+  output[outIndex] = '\0';
+  return true;
 }
 
-void updateNetworkTargets() {
+void updateNetworkTargets()
+{
   IPAddress new_gateway = WiFi.gatewayIP();
 
-  if (new_gateway == IPAddress(0, 0, 0, 0)) {
+  if (new_gateway == IPAddress(0, 0, 0, 0))
+  {
     Serial.println("Gateway IP unavailable; network targets not updated");
-    gateway_host = "";
+    gateway_ready = false;
+    gateway_host[0] = '\0';
     return;
   }
 
   gateway_ip = new_gateway;
-  gateway_host = gateway_ip.toString();
+  snprintf(
+    gateway_host,
+    sizeof(gateway_host),
+    "%u.%u.%u.%u",
+    gateway_ip[0],
+    gateway_ip[1],
+    gateway_ip[2],
+      gateway_ip[3]);
+  gateway_ready = true;
 
   Serial.print("Gateway IP: ");
   Serial.println(gateway_host);
 
-  mqtt_client.setServer(gateway_ip, mqtt_port);
-  Serial.print("Configured MQTT target: ");
-  Serial.print(gateway_host);
+  // Parse MQTT broker IP from string
+  if (mqtt_broker.fromString(mqtt_broker_ip))
+  {
+    mqtt_broker_ready = true;
+    mqtt_client.setServer(mqtt_broker, mqtt_port);
+    Serial.print("Configured MQTT broker: ");
+    Serial.print(mqtt_broker_ip);
   Serial.print(":");
   Serial.println(mqtt_port);
+  }
+  else
+  {
+    mqtt_broker_ready = false;
+    Serial.print("ERROR: Failed to parse MQTT broker IP: ");
+    Serial.println(mqtt_broker_ip);
+  }
 
-  Serial.print("Configured API endpoint base: http://");
-  Serial.print(gateway_host);
+  // Parse API server IP from string
+  if (api_server.fromString(api_server_ip))
+  {
+    api_server_ready = true;
+    Serial.print("Configured API server: ");
+    Serial.print(api_server_ip);
   Serial.print(":");
   Serial.print(api_port);
   Serial.println(api_path);
 }
+  else
+  {
+    api_server_ready = false;
+    Serial.print("ERROR: Failed to parse API server IP: ");
+    Serial.println(api_server_ip);
+  }
+}
 
-void checkRFIDWithServer(String rfid_uid) {
-  if (!wifi_connected) {
+void reportRuntimeStats(unsigned long now)
+{
+  if (now - lastTelemetryReport < TELEMETRY_INTERVAL_MS)
+  {
+    return;
+  }
+
+  lastTelemetryReport = now;
+
+  Serial.println("\n--- Runtime Telemetry ---");
+  Serial.print("Free Heap: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
+
+  Serial.print("WiFi RSSI: ");
+  if (wifi_connected)
+  {
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+  }
+  else
+  {
+    Serial.println("N/A");
+  }
+
+  Serial.print("MQTT Connected: ");
+  Serial.println(mqtt_client.connected() ? "Yes" : "No");
+  Serial.println("-------------------------");
+}
+
+void checkRFIDWithServer(const char *rfid_uid)
+{
+  if (!wifi_connected)
+  {
     Serial.println("Cannot check RFID: WiFi not connected");
     return;
   }
 
-  if (gateway_host.length() == 0) {
-    Serial.println("Cannot check RFID: gateway IP not available");
+  if (!api_server_ready)
+  {
+    Serial.println("Cannot check RFID: API server IP not configured");
     return;
   }
   
   HTTPClient http;
-  String encoded_rfid = urlEncode(rfid_uid);
-  String url = "http://" + gateway_host + ":" + String(api_port) + String(api_path) + "?rfid_data=" + encoded_rfid;
+  http.setTimeout(2000);
+  http.setConnectTimeout(2000);
+  http.setReuse(true); // Connection pooling
+
+  char encoded_rfid[ENCODED_UID_BUFFER_LEN] = {0};
+  if (!urlEncode(rfid_uid, encoded_rfid, sizeof(encoded_rfid)))
+  {
+    Serial.println("Failed to encode RFID UID; request skipped");
+    return;
+  }
+
+  char url[URL_BUFFER_LEN] = {0};
+  char api_host[16] = {0};
+  snprintf(
+      api_host,
+      sizeof(api_host),
+      "%u.%u.%u.%u",
+      api_server[0],
+      api_server[1],
+      api_server[2],
+      api_server[3]);
+  
+  int written = snprintf(
+    url,
+    sizeof(url),
+    "http://%s:%u%s?rfid_data=%s",
+      api_host,
+    api_port,
+    api_path,
+      encoded_rfid);
+
+  if (written <= 0 || static_cast<size_t>(written) >= sizeof(url))
+  {
+    Serial.println("URL buffer overflow; request skipped");
+    return;
+  }
   
   Serial.print("Checking with server: ");
   Serial.println(url);
   
-  http.begin(url);
-  http.setTimeout(5000);
+  if (!http.begin(httpClient, url))
+  {
+    Serial.println("HTTP begin failed");
+    return;
+  }
   
   int httpCode = http.GET();
   
-  if (httpCode > 0) {
+  if (httpCode > 0)
+  {
     Serial.print("HTTP Response Code: ");
     Serial.println(httpCode);
     
-    if (httpCode == HTTP_CODE_OK) {
-      String payload = http.getString();
-      Serial.print("Response: ");
-      Serial.println(payload);
+    if (httpCode == HTTP_CODE_OK)
+    {
+      // Use char buffer instead of String to prevent heap fragmentation
+      char response_buffer[512] = {0};
+      int len = http.getSize();
       
-      // Parse JSON response
-      JsonDocument doc;
-      DeserializationError error = deserializeJson(doc, payload);
-      
-      if (!error) {
-        int status = doc["status"];
-        bool found = doc["found"];
-        const char* message = doc["message"];
+      if (len > 0 && len < static_cast<int>(sizeof(response_buffer)))
+      {
+        int bytesRead = http.getStream().readBytes(response_buffer, len);
+        response_buffer[bytesRead] = '\0';
         
-        Serial.print("Status: ");
-        Serial.println(status);
-        Serial.print("Found: ");
-        Serial.println(found ? "Yes" : "No");
-        Serial.print("Message: ");
-        Serial.println(message);
+        Serial.print("Response: ");
+        Serial.println(response_buffer);
         
-        // Publish to MQTT
-        String mqtt_message = String(status);
-        publishMQTT(mqtt_message);
+        // Use StaticJsonDocument for pre-allocated memory
+        // Note: StaticJsonDocument is deprecated in ArduinoJson v7, but JsonDocument
+        // is not a template in v7.4.2, so we suppress the warning
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+        StaticJsonDocument<256> doc;
+        #pragma GCC diagnostic pop
+        DeserializationError error = deserializeJson(doc, response_buffer);
         
-      } else {
-        Serial.print("JSON Parse Error: ");
-        Serial.println(error.c_str());
+        if (!error)
+        {
+          int status = doc["status"];
+          bool found = doc["found"];
+          const char *message = doc["message"];
+          
+          Serial.print("Status: ");
+          Serial.println(status);
+          Serial.print("Found: ");
+          Serial.println(found ? "Yes" : "No");
+          Serial.print("Message: ");
+          Serial.println(message);
+          
+          char mqtt_message[8] = {0};
+          snprintf(mqtt_message, sizeof(mqtt_message), "%d", status);
+          publishMQTT(mqtt_message);
+        }
+        else
+        {
+          Serial.print("JSON Parse Error: ");
+          Serial.println(error.c_str());
+        }
+      }
+      else
+      {
+        Serial.println("Response too large or invalid size");
       }
     }
-  } else {
+  }
+  else
+  {
     Serial.print("HTTP Request Failed: ");
     Serial.println(http.errorToString(httpCode));
   }
@@ -330,19 +567,27 @@ void checkRFIDWithServer(String rfid_uid) {
   Serial.println("---------------------------------\n");
 }
 
-void publishMQTT(String message) {
-  if (mqtt_client.connected()) {
-    bool published = mqtt_client.publish(mqtt_topic, message.c_str());
+void publishMQTT(const char *message)
+{
+  if (mqtt_client.connected())
+  {
+    // Enable message retention so new clients get last state immediately
+    bool published = mqtt_client.publish(mqtt_topic, message, true);
     
-    if (published) {
-      Serial.print("MQTT Published: ");
+    if (published)
+    {
+      Serial.print("MQTT Published (retained): ");
       Serial.print(mqtt_topic);
       Serial.print(" -> ");
       Serial.println(message);
-    } else {
+    }
+    else
+    {
       Serial.println("MQTT Publish Failed!");
     }
-  } else {
+  }
+  else
+  {
     Serial.println("Cannot publish: MQTT not connected");
   }
 }

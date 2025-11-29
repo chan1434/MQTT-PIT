@@ -2,9 +2,7 @@
 // API endpoint to update a registered RFID card's status
 
 header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
+// CORS headers handled by .htaccess
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
@@ -36,7 +34,7 @@ if (empty($data)) {
     $data = $_POST;
 }
 
-$rfidId = isset($data['id']) ? (int)$data['id'] : null;
+$rfidId = isset($data['id']) ? (int) $data['id'] : null;
 $rfidData = isset($data['rfid_data']) ? strtoupper(trim($data['rfid_data'])) : null;
 $statusProvided = array_key_exists('status', $data);
 
@@ -48,7 +46,7 @@ if (!$statusProvided) {
     exit();
 }
 
-$status = (int)$data['status'] ? 1 : 0;
+$status = (int) $data['status'] ? 1 : 0;
 
 if ($rfidId === null && ($rfidData === null || $rfidData === '')) {
     echo json_encode([
@@ -85,11 +83,11 @@ try {
     $updateStmt = $conn->prepare('UPDATE rfid_reg SET rfid_status = :status WHERE id = :id');
     $updateStmt->execute([
         'status' => $status,
-        'id' => (int)$existing['id'],
+        'id' => (int) $existing['id'],
     ]);
 
     $refreshStmt = $conn->prepare('SELECT id, rfid_data, rfid_status, created_at, updated_at FROM rfid_reg WHERE id = :id');
-    $refreshStmt->execute(['id' => (int)$existing['id']]);
+    $refreshStmt->execute(['id' => (int) $existing['id']]);
     $updated = $refreshStmt->fetch();
 
     if (!$updated) {
@@ -97,13 +95,18 @@ try {
     }
 
     $responseItem = [
-        'id' => (int)$updated['id'],
+        'id' => (int) $updated['id'],
         'rfid_data' => $updated['rfid_data'],
-        'rfid_status' => (bool)$updated['rfid_status'],
+        'rfid_status' => (bool) $updated['rfid_status'],
         'status_text' => $updated['rfid_status'] ? '1' : '0',
         'created_at' => $updated['created_at'],
         'updated_at' => $updated['updated_at'],
     ];
+
+    // Clear APCu cache for registered list (if available)
+    if (function_exists('apcu_delete')) {
+        apcu_delete('rfid_registered_list');
+    }
 
     echo json_encode([
         'success' => true,

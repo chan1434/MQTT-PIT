@@ -154,7 +154,7 @@ Edit `config/database.php`:
 define('DB_HOST', 'localhost');
 define('DB_USER', 'root');
 define('DB_PASS', '');
-define('DB_NAME', 'it414_db_GROUP1');
+define('DB_NAME', 'it414_db_ajjcr');
 ```
 
 ### CORS Settings
@@ -260,6 +260,24 @@ SELECT * FROM rfid_logs
 ORDER BY time_log DESC 
 LIMIT 10;
 ```
+
+### Timezone Migration (UTC ➜ Asia/Manila)
+
+1. **Backup first**: export the `rfid_logs` table (e.g. via phpMyAdmin or `mysqldump`).
+2. Run a dry run to preview the adjustments:
+   ```bash
+   php tools/migrate_logs_timezone.php --source=UTC
+   ```
+3. Apply the conversion after reviewing the output:
+   ```bash
+   php tools/migrate_logs_timezone.php --source=UTC --apply
+   ```
+4. Optional: limit the number of rows processed in one pass:
+   ```bash
+   php tools/migrate_logs_timezone.php --source=UTC --limit=500 --apply
+   ```
+
+The script assumes existing timestamps were recorded in UTC. Provide a different `--source` timezone if needed (e.g. `--source=Asia/Singapore`).
 
 ### Clear Old Logs:
 ```sql
